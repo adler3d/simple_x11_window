@@ -1,2 +1,0 @@
-# xedit
-simple code editor
