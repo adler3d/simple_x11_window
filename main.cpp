@@ -9,6 +9,7 @@
 #endif
 
 #ifdef __linux__
+	#include <unistd.h>
 	#include <sys/time.h>
 	#include <sys/ipc.h>
 	#include <sys/shm.h>
@@ -146,7 +147,7 @@ struct BitFont {
 		}
 	}
 };
-
+#include <cmath>
 struct Canvas {
 	int		width, height;
 	int		stride;
@@ -254,6 +255,15 @@ struct Canvas {
 		for (int j = y; j < y + h; j++)
 			for (int i = x; i < x + w; i++)
 				pixels[i + j * stride] = color;
+	};
+	static inline double hypot(double x,double y){return sqrt(x*x+y*y);}
+	void circle(int x, int y, int r, Color color) {
+		x+=r;y+=r;int d=r*2;
+		for (int j = 0; j < d; j++)
+			for (int i = 0; i < d; i++){
+				int px=i+x-d;int py=j+y-d;if(px<0||px>=width)continue;if(py<0||py>=height)continue;
+				if(hypot(i-r,j-r)<r)pixels[px + py * stride] = color;
+			}
 	};
 };
 
@@ -666,7 +676,7 @@ public:
 			}
 
 			canvas->rect = Rect(0, 0, canvas->width, canvas->height);
-
+return;
 			//canvas->clear(theme.back_normal);
 			for (int r = 0; r < rows; r++)
 				for (int c = 0; c < cols; c++) {
@@ -758,6 +768,7 @@ struct Application {
 	Display	*display;
 	Window	window;
 	Atom	WM_DELETE_WINDOW;
+	long event_mask;
 #endif
 
 	Application(int width, int height) : width(width), height(height) {
@@ -782,10 +793,12 @@ struct Application {
 		int screen = DefaultScreen(display);
 		
 		XSetWindowAttributes attr;
-		attr.event_mask = ExposureMask | PointerMotionMask | ButtonPressMask | KeyPressMask | StructureNotifyMask | FocusChangeMask;		
+		attr.override_redirect = True;   
+		attr.event_mask = ExposureMask | PointerMotionMask | ButtonPressMask | ButtonReleaseMask | KeyPressMask| KeyReleaseMask | StructureNotifyMask | FocusChangeMask;		
+		event_mask=attr.event_mask;
 
 		window = XCreateWindow(display, root, 0, 0, width, height, 0, 0, InputOutput, NULL, CWEventMask, &attr);
-					
+
 		XMapWindow(display, window);
 		XSync(display, false);
 		
@@ -795,7 +808,8 @@ struct Application {
 		
 		canvas = new Canvas(display);
 		editor = new Editor(THEME_DARK);
-		resize(800, 600);
+		resize(1024, 768);
+		fullscreen();
 	#endif
 	}
 
@@ -834,6 +848,31 @@ struct Application {
 		canvas->resize(editor->cols * 9, editor->rows * 16);
 	}
 
+class QapClock
+{
+public:
+  double beg,tmp;
+  bool run;
+public:
+  QapClock(){run=false;Start();}
+  double em_perf_now(){
+    timeval t;
+    gettimeofday(&t,NULL);
+    return t.tv_sec*1e6+t.tv_usec;
+  }
+  void Start(){beg=em_perf_now();run=true;}
+  void Stop(){tmp=em_perf_now();run=false;tmp-=beg;}
+  double Time(){if(run)tmp=em_perf_now();return double(run?(tmp-beg):tmp)/1000.0;}
+  double MS()
+  {
+    double d1000=1000.0;
+    if(run)tmp=em_perf_now();
+    if(run)return tmp-beg;
+    if(!run)return tmp;
+    return 0;
+  }
+};
+
 	void loop() {
 	#ifdef WIN32
 		MSG msg;
@@ -845,23 +884,50 @@ struct Application {
 	
 	#ifdef __linux__
 		XEvent e;
-		bool quit = false;
+		bool quit = false;int iter=0;QapClock clock;clock.Start();
 		while (!quit) {
-			XNextEvent(display, &e);
+			//if(!XCheckMaskEvent(display,event_mask, &e)){
+			//	canvas->present(window);
+			//	XNextEvent(display,&e);
+			//}
+			if(!XPending(display)){
+
+				canvas->circle((iter*2)%canvas->width, 200, 8, 0x00000000);
+				iter++;
+				canvas->circle((iter*2)%canvas->width, 200, 8, 0xffff0000);
+				canvas->present(window);
+				double ups=60;
+				double ut=1000.0/ups;
+				double ms=clock.MS()/1000;double dt=iter*ut-ms;double dtold=dt;/*printf("dt = %i\n",int(dt));*/if(dt<0)dt=0;if(dt>500)dt=500;printf("dt = %4.2f             %4.2f\n",float(dt),float(dtold));
+				usleep(abs(dt<0?0:dt)*1000);
+				//printf("iter = %i\n",iter++);
+				continue;
+			}
+			XNextEvent(display,&e);
 			switch (e.type) {
 				case FocusIn:
 					invalidate();
 					paint();
 				break;
-				case ButtonPress :
+				case ButtonPress :{
+					int b=e.xbutton.button;
+					if(b==1) down=1;
 					if (e.xbutton.button == 4)	editor->onScroll(0, +1);
 					if (e.xbutton.button == 5)	editor->onScroll(0, -1);
 					invalidate();
-					break;				
+					break;		
+				}
+				case ButtonRelease:{
+					int b=e.xbutton.button;
+					printf("button: %d \n", e.xbutton.button);
+					if(b==1) down=0;
+					break;	
+				}
 				case MotionNotify :
-				//	printf("mouse: %d %d\n", e.xmotion.x, e.xmotion.y);
-				//	offset = e.xmotion.y;
-				//	draw(display, window, DefaultGC(display, screen));
+					//printf("mouse: %d %d\n", e.xmotion.x, e.xmotion.y);
+					if(down)canvas->circle(e.xmotion.x, e.xmotion.y, 8, 0xff80ff80);
+					//offset = e.xmotion.y;
+					//draw(display, window, DefaultGC(display, screen));
 					break;
 				case KeyPress: {
 					//	printf("key: %d %d\n", e.xkey.state, e.xkey.keycode);
@@ -875,6 +941,14 @@ struct Application {
 						invalidate();
 					}
 					break;
+				case KeyRelease:{ 
+						printf("key: %d %d\n", e.xkey.state, e.xkey.keycode);
+						int VK_ESCAPE=9;
+						int VK_RETURN=36;
+						if(e.xkey.keycode==VK_ESCAPE)quit=true;
+						if(e.xkey.keycode==VK_RETURN)fullscreen();
+					break;
+				}
 				case ConfigureNotify : {
 						width	= e.xconfigure.width;
 						height	= e.xconfigure.height;
@@ -892,6 +966,34 @@ struct Application {
 			
 		}	
 	#endif
+	}
+	bool down;
+	void fullscreen(){
+		fullscreen(display,window);
+	}
+	void fullscreen(Display* dpy, Window win) {
+		#define _NET_WM_STATE_REMOVE        0
+		#define _NET_WM_STATE_ADD           1
+		#define _NET_WM_STATE_TOGGLE        2
+
+		XEvent xev;
+		Atom wm_state  =  XInternAtom(dpy, "_NET_WM_STATE", False);
+		Atom max_horz  =  XInternAtom(dpy, "_NET_WM_STATE_MAXIMIZED_HORZ", False);
+		Atom max_vert  =  XInternAtom(dpy, "_NET_WM_STATE_MAXIMIZED_VERT", False);
+		Atom scr_full  =  XInternAtom(dpy, "_NET_WM_STATE_FULLSCREEN", False);
+
+		memset(&xev, 0, sizeof(xev));
+		xev.type = ClientMessage;
+		xev.xclient.window = win;
+		xev.xclient.message_type = wm_state;
+		xev.xclient.format = 32;
+		xev.xclient.data.l[0] = _NET_WM_STATE_TOGGLE;
+		xev.xclient.data.l[1] = max_horz;
+		//xev.xclient.data.l[2] = max_vert;
+		xev.xclient.data.l[1] = scr_full;
+
+		XSendEvent(dpy, DefaultRootWindow(dpy), False, SubstructureNotifyMask, &xev);
+	  printf("fail...");
 	}
 
 	void paint() {
